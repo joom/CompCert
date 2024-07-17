@@ -23,10 +23,12 @@ open Events
 open! Ctypes
 open Csyntax
 open Csem
+open Json
 
 (* Configuration *)
 
 let trace = ref 1   (* 0 if quiet, 1 if normally verbose, 2 if full trace *)
+let interactive = ref false (* Runs interpreter one step at a time if true *)
 
 type mode = First | Random | All
 
@@ -667,3 +669,169 @@ let execute prog =
               explore_one p prog1 ge 0 s (world wge wm)
           | All ->
               explore_all p prog1 ge 0 [(1, s, world wge wm)]
+
+(* Interactive mode in json *)
+
+let pp_value ge e pp v =
+  pp_jobject_start pp;
+  begin match v with
+  | Values.Vundef ->
+      pp_jmember ~first:true pp "val" pp_jstring "Vundef"
+  | Values.Vint i ->
+      pp_jmember ~first:true pp "val" pp_jstring "Vint";
+      pp_jmember pp "i" pp_jint (Z.to_int i)
+  | Values.Vlong l ->
+      pp_jmember ~first:true pp "val" pp_jstring "Vlong";
+      pp_jmember pp "l" pp_jint (Z.to_int l)
+  | Values.Vfloat f ->
+      pp_jmember ~first:true pp "val" pp_jstring "Vfloat";
+      pp_jmember pp "f" output_string (Printf.sprintf "%.15F" (camlfloat_of_coqfloat f))
+  | Values.Vsingle f ->
+      pp_jmember ~first:true pp "val" pp_jstring "Vsingle";
+      pp_jmember pp "l" output_string (Printf.sprintf "%.15Ff" (camlfloat_of_coqfloat32 f))
+  | Values.Vptr (b, ofs) ->
+      pp_jmember ~first:true pp "val" pp_jstring "Vptr";
+      pp_jmember pp "b" pp_jint (P.to_int b);
+      pp_jmember pp "ofs" pp_jint32 (camlint_of_coqint ofs);
+      match invert_local_variable e b with
+      | Some id -> pp_jmember pp "name" pp_jstring (extern_atom id)
+      | None ->
+          match Genv.invert_symbol ge b with
+          | Some id -> pp_jmember pp "name" pp_jstring (extern_atom id)
+          | None -> ()
+  end;
+  pp_jobject_end pp
+
+let pp_quantity pp = function
+| Memdata.Q32 -> pp_jint pp 32
+| Memdata.Q64 -> pp_jint pp 64
+
+let pp_memval ge e pp p =
+  pp_jobject_start pp;
+  begin match p with
+  | Memdata.Undef ->
+      pp_jmember ~first:true pp "memval" pp_jstring "Undef"
+  | Memdata.Byte b ->
+      pp_jobject_start pp;
+      pp_jmember ~first:true pp "memval" pp_jstring "Byte";
+      pp_jmember pp "b" pp_jint (Z.to_int b);
+      pp_jobject_end pp
+  | Memdata.Fragment (v, q, n) ->
+      pp_jobject_start pp;
+      pp_jmember ~first:true pp "memval" pp_jstring "Fragment";
+      pp_jmember pp "v" (pp_value ge e) v;
+      pp_jmember pp "q" pp_quantity q;
+      pp_jmember pp "n" pp_jint (Camlcoq.Nat.to_int n);
+      pp_jobject_end pp
+  end;
+  pp_jobject_end pp
+
+let sort_memory m = List.sort (fun x y -> compare (P.to_int (fst x)) (P.to_int (fst y))) m
+
+let pp_zmap ge e pp m =
+  let elts = Maps.PTree.elements (snd m) in
+  pp_jobject pp
+             (fun pp k -> pp_jstring pp (string_of_int (P.to_int k)))
+             (pp_memval ge e)
+             (sort_memory elts)
+
+let pp_memory ge e pp m =
+  pp_jobject pp
+             (fun pp k -> pp_jstring pp (string_of_int (P.to_int k)))
+             (pp_zmap ge e)
+             (sort_memory (Maps.PTree.elements (snd (Mem.mem_contents m))))
+
+let pp_state pp (prog, ge, s) =
+  pp_jobject_start pp;
+  begin match s with
+  | State(f, s, k, e, m) ->
+      (* PrintCsyntax.print_pointer_hook := print_pointer ge.genv_genv e; *)
+      (* fprintf p "in function %s, statement@ @[<hv 0>%a@]" *)
+      (*         (name_of_function prog f) *)
+      (*         PrintCsyntax.print_stmt s *)
+      pp_jmember pp "memory" (pp_memory ge e) m
+  | ExprState(f, r, k, e, m) ->
+      (* PrintCsyntax.print_pointer_hook := print_pointer ge.genv_genv e; *)
+      (* fprintf p "in function %s, expression@ @[<hv 0>%a@]" *)
+      (*         (name_of_function prog f) *)
+      (*         PrintCsyntax.print_expr r *)
+      pp_jmember pp "memory" (pp_memory ge e) m
+  | Callstate(fd, args, k, m) ->
+      (* PrintCsyntax.print_pointer_hook := print_pointer ge.genv_genv Maps.PTree.empty; *)
+      (* fprintf p "calling@ @[<hov 2>%s(%a)@]" *)
+      (*         (name_of_fundef prog fd) *)
+      (*         print_val_list args *)
+      ()
+  | Returnstate(res, k, m) ->
+      (* PrintCsyntax.print_pointer_hook := print_pointer ge.genv_genv Maps.PTree.empty; *)
+      (* fprintf p "returning@ %a" *)
+      (*         print_val res *)
+      ()
+  | Stuckstate ->
+      (* fprintf p "stuck after an undefined expression" *)
+      ()
+  end;
+  pp_jobject_end pp
+
+let pp_success pp time red state =
+  pp_jobject_start pp;
+  pp_jmember ~first:true pp "time" pp_jint time;
+  pp_jmember pp "reduction" pp_jstring (camlstring_of_coqstring red);
+  pp_jmember pp "state" pp_state state;
+  pp_jobject_end pp
+
+let pp_error pp time msg code state =
+  pp_jobject_start pp;
+  pp_jmember ~first:true pp "time" pp_jint time;
+  pp_jmember pp "message" pp_jstring msg;
+  begin match code with
+  | None -> ()
+  | Some c -> pp_jmember pp "code" pp_jint32 c;
+  end;
+  pp_jobject_end pp
+
+(* Execution of a single step, interactively.
+   Return list of triples (reduction rule, next state, next world). *)
+let interactive_step pp prog ge time s w =
+  match Cexec.at_final_state s with
+  | Some r ->
+      pp_error pp time "terminated" (Some (camlint_of_coqint r)) s;
+      begin match !mode with
+      | All -> []
+      | First | Random -> exit (Int32.to_int (camlint_of_coqint r))
+      end
+  | None ->
+      let l = Cexec.do_step ge do_external_function do_inline_assembly w s in
+      if l = []
+      || List.exists (fun (Cexec.TR(r,t,s)) -> s = Stuckstate) l
+      then begin
+        pp_error pp time "stuck" None s;
+        exit 126
+      end else begin
+        List.map (fun (Cexec.TR(r, t, s')) -> (r, s', do_events std_formatter ge time w t)) l
+      end
+
+let run_interactive prog =
+  let pp = stdout in
+  match fixup_main prog with
+  | None -> exit 126
+  | Some prog1 ->
+      let wprog = world_program prog1 in
+      let wge = globalenv wprog in
+      match Genv.init_mem (program_of_program wprog) with
+      | None ->
+          Printf.fprintf pp "ERROR: World memory state undefined@."; exit 126
+      | Some wm ->
+      match Cexec.do_initial_state prog1 with
+      | None ->
+          Printf.fprintf pp "ERROR: Initial state undefined@."; exit 126
+      | Some(ge, s) ->
+          let rec loop time s w =
+            let _ = read_line () in
+            match interactive_step pp prog1 ge time s w with
+            | [] -> ()
+            | (red, s', w') :: _ ->
+              pp_success pp time red (prog1, ge.genv_genv, s');
+              loop (time + 1) s' w'
+          in
+          ignore (loop 0 s (world wge wm))

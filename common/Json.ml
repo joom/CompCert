@@ -40,19 +40,22 @@ let pp_jopt pp_elem oc = function
 
 (* Print opening and closing curly braces for json dictionaries *)
 let pp_jobject_start pp =
-  output_string pp "\n{"
+  output_string pp "{"
 
 let pp_jobject_end pp =
   output_string pp "}"
 
 (* Print a member of a json dictionary *)
-let pp_jmember ?(first=false) pp name pp_mem mem =
+let pp_jmember_kv ?(first=false) pp pp_key key pp_value value =
   if not first then output_string pp ",";
   output_string pp " ";
-  pp_jstring pp name;
-  output_string pp " :";
-  pp_mem pp mem;
-  output_string pp "\n"
+  pp_key pp key;
+  output_string pp " : ";
+  pp_value pp value
+
+(* Print a member of a json dictionary *)
+let pp_jmember ?(first=false) pp name pp_mem mem =
+  pp_jmember_kv ~first:first pp pp_jstring name pp_mem mem
 
 (* Print singleton object *)
 let pp_jsingle_object pp name pp_mem mem =
@@ -71,6 +74,18 @@ let pp_jarray elem pp l =
     List.iter (fun l -> pp_sep (); elem pp l) tail;
   end;
   output_string pp "]"
+
+(* Print an association list as json object *)
+let pp_jobject pp pp_key pp_value l =
+  let pp_sep () = output_string pp ", " in
+  pp_jobject_start pp;
+  begin match l with
+  | [] -> ()
+  | (k, v) :: tail ->
+    pp_jmember_kv ~first:true pp pp_key k pp_value v;
+    List.iter (fun (k', v') -> pp_sep (); pp_jmember_kv pp pp_key k' pp_value v') tail;
+  end;
+  pp_jobject_end pp
 
 (* Helper functions for printing coq integer and floats *)
 let pp_int pp i =
