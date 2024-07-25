@@ -77,13 +77,12 @@ let pp_jarray elem pp l =
 
 (* Print an association list as json object *)
 let pp_jobject pp pp_key pp_value l =
-  let pp_sep () = output_string pp ", " in
   pp_jobject_start pp;
   begin match l with
   | [] -> ()
   | (k, v) :: tail ->
     pp_jmember_kv ~first:true pp pp_key k pp_value v;
-    List.iter (fun (k', v') -> pp_sep (); pp_jmember_kv pp pp_key k' pp_value v') tail;
+    List.iter (fun (k', v') -> pp_jmember_kv pp pp_key k' pp_value v') tail;
   end;
   pp_jobject_end pp
 

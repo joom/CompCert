@@ -77,7 +77,7 @@ let compile_i_file sourcename preproname =
   if !option_interp then begin
     Machine.config := Machine.compcert_interpreter !Machine.config;
     let csyntax = parse_c_file sourcename preproname in
-    if !Interp.interactive then Interp.run_interactive csyntax else Interp.execute csyntax;
+    if !Interactive.interactive then Interactive.run_interactive csyntax else Interp.execute csyntax;
     ""
   end else if !option_S then begin
     compile_c_file sourcename preproname
@@ -356,7 +356,7 @@ let cmdline_actions =
  [ Exact "-interp", Set option_interp;
   Exact "-quiet", Unit (fun () -> Interp.trace := 0);
   Exact "-trace", Unit (fun () -> Interp.trace := 2);
-  Exact "-interactive", Set Interp.interactive;
+  Exact "-interactive", Set Interactive.interactive;
   Exact "-random", Unit (fun () -> Interp.mode := Interp.Random);
   Exact "-all", Unit (fun () -> Interp.mode := Interp.All);
   Exact "-main", String (fun s -> main_function_name := s)
