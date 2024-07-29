@@ -76,7 +76,7 @@ let pp_jarray elem pp l =
   output_string pp "]"
 
 (* Print an association list as json object *)
-let pp_jobject pp pp_key pp_value l =
+let pp_jobject pp_key pp_value pp l =
   pp_jobject_start pp;
   begin match l with
   | [] -> ()
@@ -131,3 +131,19 @@ let reset_id () =
 let pp_id_const pp () =
   let i = next_id () in
   pp_jsingle_object pp "Integer" pp_jint i
+
+type json =
+  | Null
+  | Bool of bool
+  | Number of Float.t
+  | String of string
+  | Array of json list
+  | Object of (string * json) list
+
+let rec pp_json pp = function
+| Null -> output_string pp "null"
+| Bool b -> pp_jbool pp b
+| Number f -> output_string pp (Float.to_string f)
+| String s -> pp_jstring pp s
+| Array l -> pp_jarray pp_json pp l
+| Object l -> pp_jobject pp_jstring pp_json pp l

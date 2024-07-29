@@ -17,6 +17,8 @@ open Json
 let interactive = ref false (* Runs interpreter one step at a time if true *)
 let latest_output = ref None
 
+module JsonPrettyPrinter = struct
+
 let pp_id_ofs pp (id, ofs) =
   pp_jmember pp "id" pp_jstring (extern_atom id);
   pp_jmember pp "ofs" pp_int ofs
@@ -122,15 +124,15 @@ let sort_memory m = List.sort (fun x y -> compare (P.to_int (fst x)) (P.to_int (
 
 let pp_zmap ge e pp m =
   let elts = Maps.PTree.elements (snd m) in
-  pp_jobject pp
-             (fun pp k -> pp_jstring pp (string_of_int (P.to_int k)))
+  pp_jobject (fun pp k -> pp_jstring pp (string_of_int (P.to_int k)))
              (pp_memval ge e)
+             pp
              (sort_memory elts)
 
 let pp_memory ge e pp m =
-  pp_jobject pp
-             (fun pp k -> pp_jstring pp (string_of_int (P.to_int k)))
+  pp_jobject (fun pp k -> pp_jstring pp (string_of_int (P.to_int k)))
              (pp_zmap ge e)
+             pp
              (sort_memory (Maps.PTree.elements (snd (Mem.mem_contents m))))
 
 let pp_state pp (prog, ge, s) =
@@ -180,6 +182,8 @@ let pp_error pp time msg code state =
   end;
   pp_jobject_end pp
 
+end
+
 let do_event ge time w ev =
   (* Return new world after external action *)
   match ev with
@@ -213,7 +217,7 @@ let do_external_function id sg ge w args m =
 let interactive_step pp prog ge time s w =
   match Cexec.at_final_state s with
   | Some r ->
-      pp_error pp time "terminated" (Some (camlint_of_coqint r)) s;
+      JsonPrettyPrinter.pp_error pp time "terminated" (Some (camlint_of_coqint r)) s;
       exit (Int32.to_int (camlint_of_coqint r))
   | None ->
       latest_output := None;
@@ -221,7 +225,7 @@ let interactive_step pp prog ge time s w =
       if l = []
       || List.exists (fun (Cexec.TR(r,t,s)) -> s = Stuckstate) l
       then begin
-        pp_error pp time "stuck" None s;
+        JsonPrettyPrinter.pp_error pp time "stuck" None s;
         exit 126
       end else begin
         List.map (fun (Cexec.TR(r, t, s')) -> (r, s', do_events ge time w t, t)) l
@@ -266,11 +270,17 @@ let run_interactive prog =
           Printf.fprintf pp "ERROR: Initial state undefined@."; exit 126
       | Some(ge, s) ->
           let rec loop time s w =
-            let _ = read_line () in
-            match interactive_step pp prog1 ge time s w with
-            | [] -> ()
-            | (red, s', w', events) :: _ ->
-              pp_success pp time red (prog1, ge.genv_genv, s') events;
-              loop (time + 1) s' w'
+            let input = read_line () in
+            try begin
+              let j = JsonParser.value JsonLexer.read (Lexing.from_string input) in
+              pp_json pp j;
+              begin match interactive_step pp prog1 ge time s w with
+              | [] -> ()
+              | (red, s', w', events) :: _ ->
+                JsonPrettyPrinter.pp_success pp time red (prog1, ge.genv_genv, s') events;
+                loop (time + 1) s' w'
+              end
+            end with _ ->
+              Printf.fprintf pp "ERROR: Can't parse JSON input."; exit 126
           in
           ignore (loop 0 s (Interp.world wge wm))

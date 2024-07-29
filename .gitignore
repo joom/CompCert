@@ -53,6 +53,12 @@
 /aarch64/SelectLong.v
 /backend/SelectDiv.v
 /backend/SplitLong.v
+/common/JsonLexer.ml
+/common/JsonLexer.mli
+/common/JsonParser.ml
+/common/JsonParser.mli
+/common/JsonParser.automaton
+/common/JsonParser.conflicts
 /cparser/Parser.v
 /cparser/Lexer.ml
 /cparser/pre_parser.ml
