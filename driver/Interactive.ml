@@ -17,6 +17,69 @@ open Json
 let interactive = ref false (* Runs interpreter one step at a time if true *)
 let latest_output = ref None
 
+module BuildFromJson = struct
+
+exception BadValueJson of json
+exception BadQuantityJson of json
+exception BadMemvalJson of json
+exception BadMemoryJson of json
+
+let parse_quantity = function
+| Number 32. -> Memdata.Q32
+| Number 64. -> Memdata.Q64
+| j -> raise (BadQuantityJson j)
+
+let parse_value = function
+| Object [("val", String "Vundef")] -> Values.Vundef
+| Object [("val", String "Vint");
+          ("i", Number i)] -> Values.Vint (Z.of_sint (int_of_float i))
+| Object [("val", String "Vlong");
+          ("l", Number l)] -> Values.Vlong (Z.of_sint (int_of_float l))
+| Object [("val", String "Vfloat");
+          ("f", Number f)] -> Values.Vfloat (coqfloat_of_camlfloat f)
+| Object [("val", String "Vsingle");
+          ("f", Number f)] -> Values.Vfloat (coqfloat32_of_camlfloat f)
+| Object [("val", String "Vptr");
+          ("b", Number b);
+          ("ofs", Number ofs)] ->
+    Values.Vptr (P.of_int (int_of_float b), coqint_of_camlint (Int32.of_float ofs))
+| j -> raise (BadValueJson j)
+
+let parse_memval = function
+| Object [("memval", String "Undef")] -> Memdata.Undef
+| Object [("memval", String "Byte"); ("b", Number b)] ->
+    Memdata.Byte (Z.of_sint (int_of_float b))
+| Object [("memval", String "Fragment");
+          ("v", v); ("q", q); ("n", Number n)] ->
+    Memdata.Fragment (parse_value v, parse_quantity q,
+                      Camlcoq.Nat.of_int (int_of_float n))
+| j -> raise (BadMemvalJson j)
+
+let parse_memory j =
+  let rec inner m l =
+    begin match l with
+    | [] -> m
+    | (k, v) :: rest ->
+        let k' = P.of_int (int_of_string k) in
+        let v' = parse_value v in
+        inner (Maps.PTree.set k' v' m) rest
+    end in
+  let rec outer m l =
+    begin match l with
+    | [] -> m
+    | (k, Object v) :: rest ->
+        let k' = P.of_int (int_of_string k) in
+        let v' = inner Maps.PTree.empty v in
+        outer (Maps.PTree.set k' v' m) rest
+    | _ -> raise (BadMemoryJson (Object l))
+    end in
+  begin match j with
+  | Object l -> outer Maps.PTree.empty l
+  | _ -> raise (BadMemoryJson j)
+  end
+
+end
+
 module JsonPrettyPrinter = struct
 
 let pp_id_ofs pp (id, ofs) =
