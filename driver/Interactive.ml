@@ -13,6 +13,7 @@ let latest_output = ref None
 module BuildFromJson = struct
 
 exception BadValueJson of json
+exception BadValuesJson of json
 exception BadQuantityJson of json
 exception BadMemvalJson of json
 exception BadMemoryJson of json
@@ -80,9 +81,15 @@ let mem_from_contents mc =
   let next = match keys with [] -> P.of_int 1 | (k, _) :: _ -> k in
   {Mem.mem_contents = mc ; Mem.mem_access = ma; Mem.nextblock = next}
 
+let read_argvals () : Values.coq_val list =
+  let j = JsonParser.value JsonLexer.read (Lexing.from_string (read_line ())) in
+  match j with
+  | Array l -> List.map BuildFromJson.parse_value l
+  | _ -> raise (BuildFromJson.BadValuesJson j)
+
 let read_mem () : Mem.mem' =
-  mem_from_contents (BuildFromJson.parse_memory
-    (JsonParser.value JsonLexer.read (Lexing.from_string (read_line ()))))
+  let j = JsonParser.value JsonLexer.read (Lexing.from_string (read_line ())) in
+  mem_from_contents (BuildFromJson.parse_memory j)
 
 module JsonPrettyPrinter = struct
 
@@ -301,11 +308,13 @@ let run_function prog fn_name argvals m =
   end
 
 let run_interactive prog =
-  Printf.printf "Enter the name of a function (that takes no arguments): ";
+  Printf.printf "Enter the name of a function: ";
   let fn_name = intern_string (read_line ()) in
+  Printf.printf "Enter the arguments as a JSON array: ";
+  let argvals = read_argvals () in
   Printf.printf "\nEnter memory layout in JSON format: ";
   let m = read_mem () in
-  match run_function prog fn_name [] m with
+  match run_function prog fn_name argvals m with
   | (m', None, time) ->
     Printf.printf "\nNo value after time %i, here's the memory layout: %a "
       time JsonPrettyPrinter.pp_memory m'
