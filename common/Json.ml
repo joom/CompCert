@@ -51,7 +51,8 @@ let pp_jmember_kv ?(first=false) pp pp_key key pp_value value =
   output_string pp " ";
   pp_key pp key;
   output_string pp " : ";
-  pp_value pp value
+  pp_value pp value;
+  ()
 
 (* Print a member of a json dictionary *)
 let pp_jmember ?(first=false) pp name pp_mem mem =

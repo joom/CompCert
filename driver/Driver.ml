@@ -234,7 +234,7 @@ Code generation options: (use -fno-<opt> to turn off -f<opt>)
   -random        Randomize execution order
   -all           Simulate all possible execution orders
   -main <name>   Start executing at function <name> instead of main()
-  -interactive   Run the interpreter step by step
+  -interactive   Run the interpreter on a particular function and memory layout
 |}
 
 let print_usage_and_exit () =
@@ -416,6 +416,8 @@ let _ =
       fatal_error no_loc "no input file";
     if not !option_interp && !main_function_name <> "main" then
       fatal_error no_loc "option '-main' requires option '-interp'";
+    if not !option_interp && !Interactive.interactive then
+      fatal_error no_loc "option '-interactive' requires option '-interp'";
     let linker_args = time "Total compilation time" perform_actions () in
     if not (nolink ()) && linker_args <> [] then begin
       linker (output_filename_default "a.out") linker_args

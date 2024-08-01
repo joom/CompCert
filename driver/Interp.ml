@@ -613,15 +613,15 @@ let call_other_main_function main_id main_ty main_ty_res =
   { fn_return = type_int32s; fn_callconv = cc_default;
     fn_params = []; fn_vars = []; fn_body = body }
 
-let rec find_main_function name = function
+let rec find_function name = function
   | [] -> None
   | (id, Gfun fd) :: gdl ->
-       if id = name then Some fd else find_main_function name gdl
+       if id = name then Some fd else find_function name gdl
   | (id, Gvar v) :: gdl ->
-       find_main_function name gdl
+       find_function name gdl
 
 let fixup_main p =
-  match find_main_function p.Ctypes.prog_main p.Ctypes.prog_defs with
+  match find_function p.Ctypes.prog_main p.Ctypes.prog_defs with
   | None ->
       fprintf err_formatter "ERROR: no entry function %s()@."
                             (extern_atom p.Ctypes.prog_main);

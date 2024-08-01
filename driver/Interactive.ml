@@ -1,20 +1,13 @@
-(* Interpreting CompCert C sources *)
-
-(* open Format *)
-open Camlcoq
 open AST
-(* open! Integers *)
-(* open Values *)
-open Memory
-open Globalenvs
-open Events
-open! Ctypes
-open Csyntax
+open Camlcoq
 open Csem
+open Events
 open Json
+open Maps
+open Memory
 
 (* Configuration *)
-let interactive = ref false (* Runs interpreter one step at a time if true *)
+let interactive = ref false
 let latest_output = ref None
 
 module BuildFromJson = struct
@@ -60,25 +53,36 @@ let parse_memory j =
     begin match l with
     | [] -> m
     | (k, v) :: rest ->
-        let k' = P.of_int (int_of_string k) in
-        let v' = parse_value v in
-        inner (Maps.PTree.set k' v' m) rest
+        let k' = Z.of_sint (int_of_string k) in
+        let v' = parse_memval v in
+        inner (Maps.ZMap.set k' v' m) rest
     end in
   let rec outer m l =
     begin match l with
     | [] -> m
     | (k, Object v) :: rest ->
         let k' = P.of_int (int_of_string k) in
-        let v' = inner Maps.PTree.empty v in
-        outer (Maps.PTree.set k' v' m) rest
+        let v' = inner (ZMap.init Memdata.Undef) v in
+        outer (PTree.set k' v' m) rest
     | _ -> raise (BadMemoryJson (Object l))
     end in
   begin match j with
-  | Object l -> outer Maps.PTree.empty l
+  | Object l -> (ZMap.init Memdata.Undef, outer PTree.empty l)
   | _ -> raise (BadMemoryJson j)
   end
 
 end
+
+let mem_from_contents mc =
+  let ma = PMap.map (fun _ _ _ -> Some Memtype.Freeable) mc in
+  let keys = List.sort (fun (k1,_) (k2,_) -> -1 * P.compare k1 k2)
+                       (PTree.elements (snd mc)) in
+  let next = match keys with [] -> P.of_int 1 | (k, _) :: _ -> k in
+  {Mem.mem_contents = mc ; Mem.mem_access = ma; Mem.nextblock = next}
+
+let read_mem () : Mem.mem' =
+  mem_from_contents (BuildFromJson.parse_memory
+    (JsonParser.value JsonLexer.read (Lexing.from_string (read_line ()))))
 
 module JsonPrettyPrinter = struct
 
@@ -133,7 +137,7 @@ let pp_event pp ev =
   end;
   pp_jobject_end pp
 
-let pp_value ge e pp v =
+let pp_value pp v =
   pp_jobject_start pp;
   begin match v with
   | Values.Vundef ->
@@ -154,12 +158,6 @@ let pp_value ge e pp v =
       pp_jmember ~first:true pp "val" pp_jstring "Vptr";
       pp_jmember pp "b" pp_jint (P.to_int b);
       pp_jmember pp "ofs" pp_jint32 (camlint_of_coqint ofs);
-      match Interp.invert_local_variable e b with
-      | Some id -> pp_jmember pp "name" pp_jstring (extern_atom id)
-      | None ->
-          match Genv.invert_symbol ge b with
-          | Some id -> pp_jmember pp "name" pp_jstring (extern_atom id)
-          | None -> ()
   end;
   pp_jobject_end pp
 
@@ -167,7 +165,7 @@ let pp_quantity pp = function
 | Memdata.Q32 -> pp_jint pp 32
 | Memdata.Q64 -> pp_jint pp 64
 
-let pp_memval ge e pp p =
+let pp_memval pp p =
   pp_jobject_start pp;
   begin match p with
   | Memdata.Undef ->
@@ -177,7 +175,7 @@ let pp_memval ge e pp p =
       pp_jmember pp "b" pp_jint (Z.to_int b);
   | Memdata.Fragment(v, q, n) ->
       pp_jmember ~first:true pp "memval" pp_jstring "Fragment";
-      pp_jmember pp "v" (pp_value ge e) v;
+      pp_jmember pp "v" pp_value v;
       pp_jmember pp "q" pp_quantity q;
       pp_jmember pp "n" pp_jint (Camlcoq.Nat.to_int n);
   end;
@@ -185,16 +183,16 @@ let pp_memval ge e pp p =
 
 let sort_memory m = List.sort (fun x y -> compare (P.to_int (fst x)) (P.to_int (fst y))) m
 
-let pp_zmap ge e pp m =
+let pp_zmap pp m =
   let elts = Maps.PTree.elements (snd m) in
   pp_jobject (fun pp k -> pp_jstring pp (string_of_int (P.to_int k)))
-             (pp_memval ge e)
+             pp_memval
              pp
              (sort_memory elts)
 
-let pp_memory ge e pp m =
+let pp_memory pp m =
   pp_jobject (fun pp k -> pp_jstring pp (string_of_int (P.to_int k)))
-             (pp_zmap ge e)
+             pp_zmap
              pp
              (sort_memory (Maps.PTree.elements (snd (Mem.mem_contents m))))
 
@@ -204,11 +202,11 @@ let pp_state pp (prog, ge, s) =
   | State(f, s, k, e, m) ->
       (* fprintf p "in function %s, statement@ @[<hv 0>%a@]" (name_of_function prog f) PrintCsyntax.print_stmt s *)
       pp_jmember ~first:true pp "state" pp_jstring "State";
-      pp_jmember pp "memory" (pp_memory ge e) m
+      pp_jmember pp "memory" pp_memory m
   | ExprState(f, r, k, e, m) ->
       (* fprintf p "in function %s, expression@ @[<hv 0>%a@]" (name_of_function prog f) PrintCsyntax.print_expr r *)
       pp_jmember ~first:true pp "state" pp_jstring "ExprState";
-      pp_jmember pp "memory" (pp_memory ge e) m
+      pp_jmember pp "memory" pp_memory m
   | Callstate(fd, args, k, m) ->
       (* fprintf p "calling@ @[<hov 2>%s(%a)@]" (name_of_fundef prog fd) print_val_list args *)
       pp_jmember ~first:true pp "state" pp_jstring "Callstate"
@@ -220,7 +218,7 @@ let pp_state pp (prog, ge, s) =
   end;
   pp_jobject_end pp
 
-let pp_success pp time red state events =
+let _pp_success pp time red state events =
   pp_jobject_start pp;
   pp_jmember ~first:true pp "time" pp_jint time;
   pp_jmember pp "reduction" pp_jstring (camlstring_of_coqstring red);
@@ -235,7 +233,7 @@ let pp_success pp time red state events =
   end;
   pp_jobject_end pp
 
-let pp_error pp time msg code state =
+let _pp_error pp time msg code state =
   pp_jobject_start pp;
   pp_jmember ~first:true pp "time" pp_jint time;
   pp_jmember pp "message" pp_jstring msg;
@@ -275,75 +273,42 @@ let do_external_function id sg ge w args m =
       Some(((w, [Event_syscall(id, eargs, EVint len)]), Values.Vint len), m)
   | _ -> None
 
-(* Execution of a single step, interactively.
-   Return list of 5-tuples (reduction rule, next state, next world, events, output). *)
-let interactive_step pp prog ge time s w =
-  match Cexec.at_final_state s with
-  | Some r ->
-      JsonPrettyPrinter.pp_error pp time "terminated" (Some (camlint_of_coqint r)) s;
-      exit (Int32.to_int (camlint_of_coqint r))
-  | None ->
-      latest_output := None;
-      let l = Cexec.do_step ge do_external_function Interp.do_inline_assembly w s in
-      if l = []
-      || List.exists (fun (Cexec.TR(r,t,s)) -> s = Stuckstate) l
-      then begin
-        JsonPrettyPrinter.pp_error pp time "stuck" None s;
-        exit 126
-      end else begin
-        List.map (fun (Cexec.TR(r, t, s')) -> (r, s', do_events ge time w t, t)) l
-      end
+let extract_mem = function
+| State(_,_,_,_,m) -> m
+| ExprState(_,_,_,_,m) -> m
+| Callstate(_,_,_,m) -> m
+| Returnstate(_,_,m) -> m
+| Stuckstate -> raise (Failure "Cannot extract memory from state")
 
-let fixup_main pp p =
-  match Interp.find_main_function p.Ctypes.prog_main p.Ctypes.prog_defs with
-  | None ->
-      Printf.fprintf pp "ERROR: no entry function %s()@."
-                            (extern_atom p.Ctypes.prog_main);
-      None
-  | Some main_fd ->
-      match type_of_fundef main_fd with
-      | Tfunction([], Ctypes.Tint(I32, Signed, _), _) ->
-          Some p
-      | Tfunction([Ctypes.Tint _; Tpointer(Tpointer(Ctypes.Tint(I8,_,_),_),_)],
-                  Ctypes.Tint _, _) as ty ->
-          Some (Interp.change_main_function p
-                   (Interp.call_main3_function p.Ctypes.prog_main ty))
-      | Tfunction([], ty_res, _) as ty ->
-          Some (Interp.change_main_function p
-                   (Interp.call_other_main_function p.Ctypes.prog_main ty ty_res))
-      | _ ->
-          Printf.fprintf pp
-             "ERROR: wrong type for entry function %s()@."
-             (extern_atom p.Ctypes.prog_main);
-          None
+(* Execution of a single function.
+   Returns a 3-tuple:
+   (the last state of the memory before terminating or getting stuck,
+    a return value if there is one,
+    time) *)
+let run_function prog fn_name argvals m =
+  let ge = globalenv (Interp.world_program prog) in
+  let rec steps ge time s w =
+    begin match Cexec.do_step ge do_external_function Interp.do_inline_assembly w s with
+    | [] -> (extract_mem s, None, time)
+    | Cexec.TR(r, t, Stuckstate) :: _ -> (extract_mem s, None, time)
+    | Cexec.TR(r, t, Returnstate(ret_val, Kstop, m)) :: _ -> (m, Some ret_val, time)
+    | Cexec.TR(r, t, s') :: _ -> steps ge (time + 1) s' (do_events ge time w t)
+    end in
+  begin match Interp.find_function fn_name prog.Ctypes.prog_defs with
+  | None -> raise (Failure "No such function")
+  | Some fn ->
+      steps ge 0 (Callstate(fn, argvals, Kstop, m)) (Interp.world ge m)
+  end
 
 let run_interactive prog =
-  let pp = stdout in
-  match fixup_main pp prog with
-  | None -> exit 126
-  | Some prog1 ->
-      let wprog = Interp.world_program prog1 in
-      let wge = globalenv wprog in
-      match Genv.init_mem (program_of_program wprog) with
-      | None ->
-          Printf.fprintf pp "ERROR: World memory state undefined@."; exit 126
-      | Some wm ->
-      match Cexec.do_initial_state prog1 with
-      | None ->
-          Printf.fprintf pp "ERROR: Initial state undefined@."; exit 126
-      | Some(ge, s) ->
-          let rec loop time s w =
-            let input = read_line () in
-            try begin
-              let j = JsonParser.value JsonLexer.read (Lexing.from_string input) in
-              pp_json pp j;
-              begin match interactive_step pp prog1 ge time s w with
-              | [] -> ()
-              | (red, s', w', events) :: _ ->
-                JsonPrettyPrinter.pp_success pp time red (prog1, ge.genv_genv, s') events;
-                loop (time + 1) s' w'
-              end
-            end with _ ->
-              Printf.fprintf pp "ERROR: Can't parse JSON input."; exit 126
-          in
-          ignore (loop 0 s (Interp.world wge wm))
+  Printf.printf "Enter the name of a function (that takes no arguments): ";
+  let fn_name = intern_string (read_line ()) in
+  Printf.printf "\nEnter memory layout in JSON format: ";
+  let m = read_mem () in
+  match run_function prog fn_name [] m with
+  | (m', None, time) ->
+    Printf.printf "\nNo value after time %i, here's the memory layout: %a "
+      time JsonPrettyPrinter.pp_memory m'
+  | (m', Some ret_val, time) ->
+    Printf.printf "\nThere is a value %a after time %i, here's the memory layout: %a "
+      JsonPrettyPrinter.pp_value ret_val time JsonPrettyPrinter.pp_memory m'
