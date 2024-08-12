@@ -84,9 +84,9 @@ OCAMLLEX=ocamllex -q
 MODORDER=tools/modorder .depend.extr
 COPY=cp
 
-PARSERS=cparser/pre_parser.mly
+PARSERS=cparser/pre_parser.mly common/JsonParser.mly
 LEXERS=cparser/Lexer.mll lib/Tokenize.mll \
-	     lib/Readconfig.mll lib/Responsefile.mll
+	     lib/Readconfig.mll lib/Responsefile.mll common/JsonLexer.mll
 
 LIBS=str.cmxa unix.cmxa $(MENHIR_LIBS)
 LIBS_BYTE=$(patsubst %.cmxa,%.cma,$(patsubst %.cmx,%.cmo,$(LIBS)))
